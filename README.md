@@ -1,15 +1,14 @@
-# SigmaOS-power-manager
+# SigmaOS Power Manager
 
-Part of the SigmaOS multi-repository architecture.
+This crate contains power-profile and thermal-state models. For example,
+`PowerManager::set_profile()` changes in-memory frequency fields, and thermal
+updates can change those model values. The crate does not read battery or
+thermal sensors or program CPU/GPU hardware from this model API.
 
-## Principles
-- MODULARITY: Single responsibility per repository
-- LOOSE COUPLING: Minimal dependencies between repos
-- INTERFACE SEGREGATION: Clear, focused public APIs
-- DETERMINISTIC TESTING: Comprehensive test coverage
+Treat these values as simulated policy state until a platform backend and
+hardware evidence are documented. The repository depends on the sibling
+`SigmaOS-kernel` checkout through a local path.
 
 ## License
-SPDX-License-Identifier: GPL-3.0-or-later
 
-## Copyright
-Copyright (C) 2026 SigmaOS Project
+GPL-3.0-or-later. See [`LICENSE`](LICENSE) and [`Cargo.toml`](Cargo.toml).
