@@ -1,0 +1,16 @@
+[component]
+name = "SigmaOS-power-manager"
+tier = 2
+stability = "scaffold"
+language = "rust"
+description = "Laptop battery monitor, display sleep timer, suspend/hibernate daemon, and lid switch controller"
+upstream = ["https://github.com/linuxmint/xfce4-power-manager"]
+
+[contract]
+provides = ["power-manager-daemon", "battery-monitor", "lid-switch-handler"]
+depends_on = []
+
+[maturity]
+status = "Scaffold"
+test_evidence = "Compiles and passes AAA unit tests"
+next_milestone = "Hardware and runtime integration"
