@@ -2,7 +2,7 @@
 name = "sigmaos_power_manager"
 version = "0.1.0"
 edition = "2021"
-description = "Laptop battery monitor, display sleep timer, suspend/hibernate daemon, and lid switch controller"
+description = "Pure power policy for lid-close and idle-timeout decisions"
 
 [lib]
 name = "sigmaos_power_manager"

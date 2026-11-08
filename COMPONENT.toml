@@ -3,12 +3,12 @@ name = "SigmaOS-power-manager"
 tier = 2
 stability = "scaffold"
 language = "rust"
-description = "Laptop battery monitor, display sleep timer, suspend/hibernate daemon, and lid switch controller"
+description = "Pure power policy for lid-close and idle-timeout decisions; delegates hardware actions to an integration backend"
 upstream = ["https://github.com/linuxmint/xfce4-power-manager"]
 
 [contract]
-provides = ["power-manager-daemon", "battery-monitor", "lid-switch-handler"]
-depends_on = []
+provides = ["lid-close-policy", "idle-timeout-policy"]
+depends_on = ["SigmaOS-system"]
 
 [maturity]
 status = "Scaffold"
