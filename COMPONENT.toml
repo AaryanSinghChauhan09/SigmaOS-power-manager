@@ -3,7 +3,7 @@ name = "SigmaOS-power-manager"
 tier = 2
 stability = "scaffold"
 language = "rust"
-description = "Pure power policy for lid-close and idle-timeout decisions; delegates hardware actions to an integration backend"
+description = "Pure Rust policy for lid-close and idle-timeout decisions; delegates hardware actions to integration backends"
 upstream = ["https://github.com/linuxmint/xfce4-power-manager"]
 
 [contract]
