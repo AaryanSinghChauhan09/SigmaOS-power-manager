@@ -1,4 +1,5 @@
-//! SigmaOS-power_manager — power_manager component for SigmaOS
+//! SigmaOS-power-manager — Power efficiency and battery management for SigmaOS
+//! OOPS Principles: State, Strategy, Observer patterns
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -18,11 +19,100 @@ pub enum ComponentError {
 /// Convenience result type.
 pub type ComponentResult<T> = Result<T, ComponentError>;
 
+/// Power state - State Pattern
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum PowerState {
+    #[default]
+    Performance,
+    Balanced,
+    PowerSaver,
+}
+
+/// Power mode strategy - Strategy Pattern
+pub trait PowerStrategy {
+    fn get_state(&self) -> PowerState;
+    fn apply(&self) -> ComponentResult<()>;
+}
+
+/// Performance strategy
+pub struct PerformanceStrategy;
+
+impl PowerStrategy for PerformanceStrategy {
+    fn get_state(&self) -> PowerState {
+        PowerState::Performance
+    }
+    
+    fn apply(&self) -> ComponentResult<()> {
+        println!("Applying performance mode");
+        Ok(())
+    }
+}
+
+/// Balanced strategy
+pub struct BalancedStrategy;
+
+impl PowerStrategy for BalancedStrategy {
+    fn get_state(&self) -> PowerState {
+        PowerState::Balanced
+    }
+    
+    fn apply(&self) -> ComponentResult<()> {
+        println!("Applying balanced mode");
+        Ok(())
+    }
+}
+
+/// Power saver strategy
+pub struct PowerSaverStrategy;
+
+impl PowerStrategy for PowerSaverStrategy {
+    fn get_state(&self) -> PowerState {
+        PowerState::PowerSaver
+    }
+    
+    fn apply(&self) -> ComponentResult<()> {
+        println!("Applying power saver mode");
+        Ok(())
+    }
+}
+
+/// Power observer - Observer Pattern
+pub trait PowerObserver {
+    fn on_state_change(&self, state: PowerState);
+}
+
+/// Logging observer
+pub struct LoggingObserver;
+
+impl PowerObserver for LoggingObserver {
+    fn on_state_change(&self, state: PowerState) {
+        println!("LOG: Power state changed to {:?}", state);
+    }
+}
+
 /// Core component struct for power_manager.
-#[derive(Debug, Default, Clone)]
 pub struct Component {
     initialised: bool,
     name: String,
+    current_state: PowerState,
+    observers: Vec<Box<dyn PowerObserver>>,
+}
+
+impl std::fmt::Debug for Component {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Component")
+            .field("initialised", &self.initialised)
+            .field("name", &self.name)
+            .field("current_state", &self.current_state)
+            .field("observers_count", &self.observers.len())
+            .finish()
+    }
+}
+
+impl Default for Component {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Component {
@@ -31,6 +121,8 @@ impl Component {
         Self {
             initialised: false,
             name: String::from("power_manager"),
+            current_state: PowerState::Balanced,
+            observers: vec![],
         }
     }
 
@@ -61,6 +153,30 @@ impl Component {
     /// Reset the component to uninitialised state.
     pub fn reset(&mut self) {
         self.initialised = false;
+    }
+    
+    /// Apply power strategy
+    pub fn apply_strategy(&mut self, strategy: Box<dyn PowerStrategy>) -> ComponentResult<()> {
+        if !self.initialised {
+            return Err(ComponentError::NotInitialised);
+        }
+        let new_state = strategy.get_state();
+        self.current_state = new_state.clone();
+        strategy.apply()?;
+        for observer in &self.observers {
+            observer.on_state_change(new_state.clone());
+        }
+        Ok(())
+    }
+    
+    /// Add observer
+    pub fn add_observer(&mut self, observer: Box<dyn PowerObserver>) {
+        self.observers.push(observer);
+    }
+    
+    /// Get current power state
+    pub fn get_state(&self) -> PowerState {
+        self.current_state.clone()
     }
 }
 
@@ -127,5 +243,31 @@ mod tests {
         let n = c.name();
         // Assert
         assert!(!n.is_empty());
+    }
+    
+    #[test]
+    fn test_strategy_pattern_aaa() {
+        // Arrange
+        let mut c = Component::new();
+        c.init().unwrap();
+        let strategy = PerformanceStrategy;
+        // Act
+        let result = c.apply_strategy(Box::new(strategy));
+        // Assert
+        assert!(result.is_ok());
+        assert_eq!(c.get_state(), PowerState::Performance);
+    }
+    
+    #[test]
+    fn test_observer_pattern_aaa() {
+        // Arrange
+        let mut c = Component::new();
+        c.init().unwrap();
+        c.add_observer(Box::new(LoggingObserver));
+        let strategy = BalancedStrategy;
+        // Act
+        let result = c.apply_strategy(Box::new(strategy));
+        // Assert
+        assert!(result.is_ok());
     }
 }
