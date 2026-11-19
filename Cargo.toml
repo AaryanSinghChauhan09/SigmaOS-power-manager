@@ -1,9 +1,15 @@
 [package]
-name = "sigmaos_power_manager"
+name = "SigmaOS-power-manager"
 version = "0.1.0"
 edition = "2021"
-description = "Pure power policy for lid-close and idle-timeout decisions"
+license = "Apache-2.0"
+description = "SigmaOS sigmaos_power_manager component"
 
 [lib]
 name = "sigmaos_power_manager"
 path = "src/lib.rs"
+
+[dependencies]
+thiserror = "1"
+
+[dev-dependencies]

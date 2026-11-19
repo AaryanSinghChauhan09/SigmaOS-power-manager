@@ -1,49 +1,131 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LidAction { Suspend, TurnOffDisplay, DoNothing }
+//! SigmaOS-power_manager — power_manager component for SigmaOS
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
-/// Mechanism-neutral actions for the session manager or device backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PowerAction { Suspend, TurnOffDisplay }
+use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PowerManagerConfig {
-    pub lid_close_action: LidAction,
-    pub idle_sleep_minutes: u16,
+/// Error types for this component.
+#[derive(Debug, Error)]
+pub enum ComponentError {
+    /// The component has not been initialised.
+    #[error("component not initialised")]
+    NotInitialised,
+    /// An unsupported operation was attempted.
+    #[error("unsupported operation: {0}")]
+    Unsupported(&'static str),
 }
 
-impl Default for PowerManagerConfig {
-    fn default() -> Self {
-        Self { lid_close_action: LidAction::Suspend, idle_sleep_minutes: 15 }
-    }
+/// Convenience result type.
+pub type ComponentResult<T> = Result<T, ComponentError>;
+
+/// Core component struct for power_manager.
+#[derive(Debug, Default, Clone)]
+pub struct Component {
+    initialised: bool,
+    name: String,
 }
 
-impl PowerManagerConfig {
-    /// Resolve lid-close policy without performing device or session I/O.
-    pub fn action_on_lid_close(&self) -> Option<PowerAction> {
-        match self.lid_close_action {
-            LidAction::Suspend => Some(PowerAction::Suspend),
-            LidAction::TurnOffDisplay => Some(PowerAction::TurnOffDisplay),
-            LidAction::DoNothing => None,
+impl Component {
+    /// Create a new, uninitialised component.
+    pub fn new() -> Self {
+        Self {
+            initialised: false,
+            name: String::from("power_manager"),
         }
     }
 
-    /// Resolve idle policy from elapsed whole minutes. A threshold of zero disables it.
-    pub fn action_after_idle_minutes(&self, elapsed_minutes: u16) -> Option<PowerAction> {
-        if self.idle_sleep_minutes != 0 && elapsed_minutes >= self.idle_sleep_minutes {
-            Some(PowerAction::Suspend)
-        } else {
-            None
+    /// Initialise the component.
+    pub fn init(&mut self) -> ComponentResult<()> {
+        self.initialised = true;
+        Ok(())
+    }
+
+    /// Returns true if the component has been initialised.
+    pub fn is_ready(&self) -> bool {
+        self.initialised
+    }
+
+    /// Execute the component's primary operation.
+    pub fn run(&self) -> ComponentResult<()> {
+        if !self.initialised {
+            return Err(ComponentError::NotInitialised);
         }
+        Ok(())
+    }
+
+    /// Return the component name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Reset the component to uninitialised state.
+    pub fn reset(&mut self) {
+        self.initialised = false;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn test_power_manager_defaults() {
-        let cfg = PowerManagerConfig::default();
-        assert_eq!(cfg.lid_close_action, LidAction::Suspend);
-        assert_eq!(cfg.idle_sleep_minutes, 15);
+    fn test_new_not_ready_aaa() {
+        // Arrange + Act
+        let c = Component::new();
+        // Assert
+        assert!(!c.is_ready());
+    }
+
+    #[test]
+    fn test_init_makes_ready_aaa() {
+        // Arrange
+        let mut c = Component::new();
+        // Act
+        c.init().unwrap();
+        // Assert
+        assert!(c.is_ready());
+    }
+
+    #[test]
+    fn test_run_before_init_fails_aaa() {
+        // Arrange
+        let c = Component::new();
+        // Act
+        let result = c.run();
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_run_after_init_succeeds_aaa() {
+        // Arrange
+        let mut c = Component::new();
+        c.init().unwrap();
+        // Act
+        let result = c.run();
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_reset_clears_init_aaa() {
+        // Arrange
+        let mut c = Component::new();
+        c.init().unwrap();
+        assert!(c.is_ready());
+        // Act
+        c.reset();
+        // Assert
+        assert!(!c.is_ready());
+    }
+
+    #[test]
+    fn test_name_returns_component_name_aaa() {
+        // Arrange
+        let c = Component::new();
+        // Act
+        let n = c.name();
+        // Assert
+        assert!(!n.is_empty());
     }
 }
