@@ -1,6 +1,6 @@
 # SigmaOS-power-manager
 
-Pure Rust policy for lid-close and idle-timeout decisions; delegates hardware actions to integration backends
+Power manager for SigmaOS inspired by SigmaOS Linux
 
 - **Category:** System Services
 - **Engine:** power_manager

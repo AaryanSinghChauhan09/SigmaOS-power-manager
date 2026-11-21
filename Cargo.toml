@@ -3,13 +3,8 @@ name = "SigmaOS-power-manager"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "SigmaOS sigmaos_power_manager component"
+description = "SigmaOS sigmaos-power component"
 
 [lib]
 name = "sigmaos_power_manager"
 path = "src/lib.rs"
-
-[dependencies]
-thiserror = "1"
-
-[dev-dependencies]

@@ -1,183 +1,204 @@
-//! SigmaOS-power-manager — Power efficiency and battery management for SigmaOS
-//! OOPS Principles: State, Strategy, Observer patterns
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
+// SPDX-License-Identifier: Apache-2.0
+//! SigmaOS-power-manager — logind/wlogout-style power & session manager.
+//!
+//! Power actions (suspend/hibernate/reboot/shutdown/logout/lock/dpms),
+//! battery/UPS state, idle detection, and a dispatch layer that records
+//! the requested action for a session daemon to execute.
 
-use thiserror::Error;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::time::{Duration, Instant};
 
-/// Error types for this component.
-#[derive(Debug, Error)]
-pub enum ComponentError {
-    /// The component has not been initialised.
-    #[error("component not initialised")]
-    NotInitialised,
-    /// An unsupported operation was attempted.
-    #[error("unsupported operation: {0}")]
-    Unsupported(&'static str),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PowerAction {
+    Suspend,
+    Hibernate,
+    HybridSleep,
+    Reboot,
+    Shutdown,
+    Logout,
+    Lock,
+    DpmsOff,
+    DpmsOn,
+    CancelShutdown,
 }
 
-/// Convenience result type.
-pub type ComponentResult<T> = Result<T, ComponentError>;
-
-/// Power state - State Pattern
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum PowerState {
-    #[default]
-    Performance,
-    Balanced,
-    PowerSaver,
-}
-
-/// Power mode strategy - Strategy Pattern
-pub trait PowerStrategy {
-    fn get_state(&self) -> PowerState;
-    fn apply(&self) -> ComponentResult<()>;
-}
-
-/// Performance strategy
-pub struct PerformanceStrategy;
-
-impl PowerStrategy for PerformanceStrategy {
-    fn get_state(&self) -> PowerState {
-        PowerState::Performance
+impl PowerAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Suspend => "suspend",
+            Self::Hibernate => "hibernate",
+            Self::HybridSleep => "hybrid-sleep",
+            Self::Reboot => "reboot",
+            Self::Shutdown => "shutdown",
+            Self::Logout => "logout",
+            Self::Lock => "lock",
+            Self::DpmsOff => "dpms-off",
+            Self::DpmsOn => "dpms-on",
+            Self::CancelShutdown => "cancel-shutdown",
+        }
     }
-    
-    fn apply(&self) -> ComponentResult<()> {
-        println!("Applying performance mode");
-        Ok(())
+    /// Actions that end the session/power — need confirmation.
+    pub fn destructive(self) -> bool {
+        matches!(self, Self::Reboot | Self::Shutdown | Self::Hibernate)
     }
 }
 
-/// Balanced strategy
-pub struct BalancedStrategy;
-
-impl PowerStrategy for BalancedStrategy {
-    fn get_state(&self) -> PowerState {
-        PowerState::Balanced
-    }
-    
-    fn apply(&self) -> ComponentResult<()> {
-        println!("Applying balanced mode");
-        Ok(())
-    }
+impl fmt::Display for PowerAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.label()) }
 }
 
-/// Power saver strategy
-pub struct PowerSaverStrategy;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatteryState {
+    Charging,
+    Discharging,
+    Full,
+    NotPresent,
+    Unknown,
+}
 
-impl PowerStrategy for PowerSaverStrategy {
-    fn get_state(&self) -> PowerState {
-        PowerState::PowerSaver
-    }
-    
-    fn apply(&self) -> ComponentResult<()> {
-        println!("Applying power saver mode");
-        Ok(())
+impl BatteryState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Charging => "charging",
+            Self::Discharging => "discharging",
+            Self::Full => "full",
+            Self::NotPresent => "none",
+            Self::Unknown => "unknown",
+        }
     }
 }
 
-/// Power observer - Observer Pattern
-pub trait PowerObserver {
-    fn on_state_change(&self, state: PowerState);
+#[derive(Debug, Clone)]
+pub struct Battery {
+    pub present: bool,
+    pub percent: u8,          // 0-100
+    pub state: BatteryState,
+    pub time_to_empty_min: Option<u32>,
+    pub time_to_full_min: Option<u32>,
 }
 
-/// Logging observer
-pub struct LoggingObserver;
-
-impl PowerObserver for LoggingObserver {
-    fn on_state_change(&self, state: PowerState) {
-        println!("LOG: Power state changed to {:?}", state);
-    }
-}
-
-/// Core component struct for power_manager.
-pub struct Component {
-    initialised: bool,
-    name: String,
-    current_state: PowerState,
-    observers: Vec<Box<dyn PowerObserver>>,
-}
-
-impl std::fmt::Debug for Component {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Component")
-            .field("initialised", &self.initialised)
-            .field("name", &self.name)
-            .field("current_state", &self.current_state)
-            .field("observers_count", &self.observers.len())
-            .finish()
-    }
-}
-
-impl Default for Component {
+impl Default for Battery {
     fn default() -> Self {
-        Self::new()
+        Self { present: true, percent: 100, state: BatteryState::Full,
+               time_to_empty_min: None, time_to_full_min: None }
     }
 }
 
-impl Component {
-    /// Create a new, uninitialised component.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PowerError {
+    InhibitActive(String),
+    UnknownAction,
+    NoSession,
+    LowBatteryBlocking,
+}
+
+impl fmt::Display for PowerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InhibitActive(w) => write!(f, "power action inhibited by {w}"),
+            Self::UnknownAction => write!(f, "unknown power action"),
+            Self::NoSession => write!(f, "no active session"),
+            Self::LowBatteryBlocking => write!(f, "critical battery blocks sleep"),
+        }
+    }
+}
+impl std::error::Error for PowerError {}
+
+/// A recorded action request awaiting execution by the session daemon.
+#[derive(Debug, Clone)]
+pub struct PendingAction {
+    pub action: PowerAction,
+    pub scheduled_at: Instant,
+    pub confirmed: bool,
+}
+
+pub struct SigmaOSPower {
+    pub battery: Battery,
+    pub ac_online: bool,
+    last_activity: Instant,
+    idle_timeout: Duration,
+    pending: Option<PendingAction>,
+    inhibits: BTreeMap<String, String>,   // who -> why
+    session_active: bool,
+}
+
+impl SigmaOSPower {
     pub fn new() -> Self {
         Self {
-            initialised: false,
-            name: String::from("power_manager"),
-            current_state: PowerState::Balanced,
-            observers: vec![],
+            battery: Battery::default(), ac_online: true,
+            last_activity: Instant::now(),
+            idle_timeout: Duration::from_secs(300),
+            pending: None, inhibits: BTreeMap::new(), session_active: true,
         }
     }
 
-    /// Initialise the component.
-    pub fn init(&mut self) -> ComponentResult<()> {
-        self.initialised = true;
-        Ok(())
-    }
+    // ---- activity / idle ----
+    pub fn note_activity(&mut self) { self.last_activity = Instant::now(); }
+    pub fn idle_for(&self) -> Duration { self.last_activity.elapsed() }
+    pub fn is_idle(&self) -> bool { self.idle_for() >= self.idle_timeout }
+    pub fn set_idle_timeout(&mut self, d: Duration) { self.idle_timeout = d; }
 
-    /// Returns true if the component has been initialised.
-    pub fn is_ready(&self) -> bool {
-        self.initialised
+    // ---- inhibit locks (like systemd-inhibit) ----
+    pub fn inhibit(&mut self, who: impl Into<String>, why: impl Into<String>) {
+        self.inhibits.insert(who.into(), why.into());
     }
+    pub fn uninhibit(&mut self, who: &str) { self.inhibits.remove(who); }
+    pub fn inhibitors(&self) -> impl Iterator<Item = (&String, &String)> { self.inhibits.iter() }
 
-    /// Execute the component's primary operation.
-    pub fn run(&self) -> ComponentResult<()> {
-        if !self.initialised {
-            return Err(ComponentError::NotInitialised);
+    // ---- session ----
+    pub fn set_session_active(&mut self, on: bool) { self.session_active = on; }
+
+    // ---- actions ----
+    /// Request a power action. Destructive actions require `confirmed=true`
+    /// or they return PendingAction unconfirmed for the UI to confirm.
+    pub fn request(&mut self, action: PowerAction, confirmed: bool) -> Result<Option<PendingAction>, PowerError> {
+        // Inhibitors block session/power-ending actions (lock/dpms always allowed).
+        let power_affecting = matches!(action,
+            PowerAction::Suspend | PowerAction::Hibernate | PowerAction::HybridSleep
+            | PowerAction::Reboot | PowerAction::Shutdown);
+        if power_affecting && !self.inhibits.is_empty() {
+            let who = self.inhibits.keys().next().cloned().unwrap_or_default();
+            return Err(PowerError::InhibitActive(who));
         }
-        Ok(())
+        if action.destructive() && !confirmed {
+            self.pending = Some(PendingAction { action, scheduled_at: Instant::now(), confirmed: false });
+            return Ok(self.pending.clone());
+        }
+        // Critical battery blocks sleep when on battery.
+        if matches!(action, PowerAction::Suspend | PowerAction::Hibernate | PowerAction::HybridSleep)
+            && self.battery.percent <= 5 && self.battery.state == BatteryState::Discharging {
+            return Err(PowerError::LowBatteryBlocking);
+        }
+        self.pending = Some(PendingAction { action, scheduled_at: Instant::now(), confirmed: true });
+        Ok(self.pending.clone())
     }
 
-    /// Return the component name.
-    pub fn name(&self) -> &str {
-        &self.name
+    /// Execute the pending action (called by session daemon / test).
+    pub fn execute_pending(&mut self) -> Option<PowerAction> {
+        self.pending.take().map(|p| p.action)
     }
+    pub fn pending(&self) -> Option<&PendingAction> { self.pending.as_ref() }
+    pub fn cancel_pending(&mut self) { self.pending = None; }
 
-    /// Reset the component to uninitialised state.
-    pub fn reset(&mut self) {
-        self.initialised = false;
+    // ---- reporting ----
+    pub fn battery_line(&self) -> String {
+        if !self.battery.present { return "battery: none".into(); }
+        let t = match self.battery.state {
+            BatteryState::Discharging => self.battery.time_to_empty_min.map(|m| format!(" ~{m}min")).unwrap_or_default(),
+            BatteryState::Charging => self.battery.time_to_full_min.map(|m| format!(" ~{m}min")).unwrap_or_default(),
+            _ => String::new(),
+        };
+        format!("battery: {}% {}{}", self.battery.percent, self.battery.state.label(), t)
     }
-    
-    /// Apply power strategy
-    pub fn apply_strategy(&mut self, strategy: Box<dyn PowerStrategy>) -> ComponentResult<()> {
-        if !self.initialised {
-            return Err(ComponentError::NotInitialised);
-        }
-        let new_state = strategy.get_state();
-        self.current_state = new_state.clone();
-        strategy.apply()?;
-        for observer in &self.observers {
-            observer.on_state_change(new_state.clone());
-        }
-        Ok(())
+    pub fn status_line(&self) -> String {
+        let p = self.pending.as_ref().map(|p| p.action.label()).unwrap_or("none");
+        format!("{} ac={} pending={} inhibitors={}", self.battery_line(), self.ac_online, p, self.inhibits.len())
     }
-    
-    /// Add observer
-    pub fn add_observer(&mut self, observer: Box<dyn PowerObserver>) {
-        self.observers.push(observer);
-    }
-    
-    /// Get current power state
-    pub fn get_state(&self) -> PowerState {
-        self.current_state.clone()
-    }
+}
+
+impl Default for SigmaOSPower {
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]
@@ -185,89 +206,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_not_ready_aaa() {
-        // Arrange + Act
-        let c = Component::new();
-        // Assert
-        assert!(!c.is_ready());
+    fn non_destructive_executes_immediately() {
+        let mut m = SigmaOSPower::new();
+        let r = m.request(PowerAction::Lock, false).unwrap();
+        assert!(r.unwrap().confirmed);
+        assert_eq!(m.execute_pending(), Some(PowerAction::Lock));
     }
 
     #[test]
-    fn test_init_makes_ready_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        // Act
-        c.init().unwrap();
-        // Assert
-        assert!(c.is_ready());
+    fn destructive_needs_confirm() {
+        let mut m = SigmaOSPower::new();
+        let p = m.request(PowerAction::Shutdown, false).unwrap().unwrap();
+        assert!(!p.confirmed);
+        assert_eq!(m.pending().unwrap().action, PowerAction::Shutdown);
+        // now confirm
+        let p2 = m.request(PowerAction::Shutdown, true).unwrap().unwrap();
+        assert!(p2.confirmed);
+        assert_eq!(m.execute_pending(), Some(PowerAction::Shutdown));
     }
 
     #[test]
-    fn test_run_before_init_fails_aaa() {
-        // Arrange
-        let c = Component::new();
-        // Act
-        let result = c.run();
-        // Assert
-        assert!(result.is_err());
+    fn inhibit_blocks() {
+        let mut m = SigmaOSPower::new();
+        m.inhibit("upower", "firmware update");
+        assert!(m.request(PowerAction::Suspend, false).is_err());
+        m.uninhibit("upower");
+        assert!(m.request(PowerAction::Suspend, false).is_ok());
     }
 
     #[test]
-    fn test_run_after_init_succeeds_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        c.init().unwrap();
-        // Act
-        let result = c.run();
-        // Assert
-        assert!(result.is_ok());
+    fn low_battery_blocks_sleep() {
+        let mut m = SigmaOSPower::new();
+        m.battery.percent = 3;
+        m.battery.state = BatteryState::Discharging;
+        m.ac_online = false;
+        assert!(m.request(PowerAction::Suspend, false).is_err());
+        // but shutdown still allowed
+        assert!(m.request(PowerAction::Shutdown, true).is_ok());
     }
 
     #[test]
-    fn test_reset_clears_init_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        c.init().unwrap();
-        assert!(c.is_ready());
-        // Act
-        c.reset();
-        // Assert
-        assert!(!c.is_ready());
+    fn idle_detection() {
+        let mut m = SigmaOSPower::new();
+        assert!(!m.is_idle());
+        m.set_idle_timeout(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(m.is_idle());
+        m.note_activity();
+        assert!(!m.is_idle());
     }
 
     #[test]
-    fn test_name_returns_component_name_aaa() {
-        // Arrange
-        let c = Component::new();
-        // Act
-        let n = c.name();
-        // Assert
-        assert!(!n.is_empty());
+    fn battery_line() {
+        let mut m = SigmaOSPower::new();
+        m.battery.percent = 64;
+        m.battery.state = BatteryState::Discharging;
+        m.battery.time_to_empty_min = Some(180);
+        assert!(m.battery_line().contains("64%") && m.battery_line().contains("180min"));
+        m.battery.present = false;
+        assert_eq!(m.battery_line(), "battery: none");
     }
-    
+
     #[test]
-    fn test_strategy_pattern_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        c.init().unwrap();
-        let strategy = PerformanceStrategy;
-        // Act
-        let result = c.apply_strategy(Box::new(strategy));
-        // Assert
-        assert!(result.is_ok());
-        assert_eq!(c.get_state(), PowerState::Performance);
-    }
-    
-    #[test]
-    fn test_observer_pattern_aaa() {
-        // Arrange
-        let mut c = Component::new();
-        c.init().unwrap();
-        c.add_observer(Box::new(LoggingObserver));
-        let strategy = BalancedStrategy;
-        // Act
-        let result = c.apply_strategy(Box::new(strategy));
-        // Assert
-        assert!(result.is_ok());
+    fn cancel_and_labels() {
+        let mut m = SigmaOSPower::new();
+        m.request(PowerAction::Reboot, false).unwrap();
+        m.cancel_pending();
+        assert!(m.pending().is_none());
+        assert_eq!(PowerAction::DpmsOff.label(), "dpms-off");
+        assert!(PowerAction::Shutdown.destructive());
+        assert!(!PowerAction::Lock.destructive());
     }
 }
